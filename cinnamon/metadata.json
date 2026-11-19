@@ -1,0 +1,8 @@
+{
+  "uuid": "marzone@marcio",
+  "name": "Marzone",
+  "description": "Gerenciador de janelas Tiling adaptativo com presets (3 colunas, 4 quadrantes, foco + terminais) e atalhos rápidos.",
+  "version": "0.0.1",
+  "author": "marcio",
+  "cinnamon-version": ["5.4", "5.6", "5.8", "6.0", "6.2", "6.4"]
+}
