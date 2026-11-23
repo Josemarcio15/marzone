@@ -315,6 +315,7 @@ fn sync_layout_ui(
             y: z.y,
             w: z.w,
             h: z.h,
+            monitor: 0,
             color: get_color_for_id(z.id),
         });
     }
@@ -547,6 +548,7 @@ fn main() -> Result<(), slint::PlatformError> {
             y: 0.1,
             w: 0.35,
             h: 0.35,
+            monitor: 0,
             color: get_color_for_id(next_id),
         };
         za.push(new_z.clone());

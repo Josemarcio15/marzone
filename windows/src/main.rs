@@ -11,18 +11,25 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use windows::core::w;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    CreateBitmap, DeleteObject, GetDC, GetMonitorInfoW, MonitorFromWindow, ReleaseDC,
+    CreateBitmap, DeleteObject, EnumDisplayMonitors, GetDC, GetMonitorInfoW, MonitorFromWindow, ReleaseDC,
     HBITMAP, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
 };
+use windows::Win32::UI::HiDpi::{
+    PhysicalToLogicalPointForPerMonitorDPI, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState,
     VK_0, VK_1, VK_2, VK_3, VK_4, VK_5, VK_6, VK_7, VK_8, VK_9,
+    VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4,
+    VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9,
     VK_A, VK_B, VK_C, VK_D, VK_E, VK_F, VK_G, VK_H, VK_I, VK_J,
     VK_K, VK_L, VK_M, VK_N, VK_O, VK_P, VK_Q, VK_R, VK_S, VK_T,
     VK_U, VK_V, VK_W, VK_X, VK_Y, VK_Z,
@@ -40,7 +47,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowsHookExW, ShowWindow, TrackPopupMenu, UnhookWindowsHookEx,
     CS_HREDRAW, CS_VREDRAW, HHOOK, HICON, HMENU, ICONINFO, KBDLLHOOKSTRUCT,
     MF_BYPOSITION, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SW_RESTORE, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
     WH_KEYBOARD_LL, WM_COMMAND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
     WM_SYSKEYDOWN, WM_USER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
@@ -90,6 +97,8 @@ pub struct ZoneConfig {
     pub w: f32,
     pub h: f32,
     #[serde(default)]
+    pub monitor: Option<i32>,
+    #[serde(default)]
     pub color: Option<String>,
 }
 
@@ -97,6 +106,8 @@ pub struct ZoneConfig {
 pub struct LayoutConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub monitor: Option<i32>,
     pub zones: Vec<ZoneConfig>,
 }
 
@@ -104,6 +115,8 @@ pub struct LayoutConfig {
 pub struct ConfigFile {
     #[serde(rename = "activeLayoutId")]
     pub active_layout_id: String,
+    #[serde(default)]
+    pub active_layout_per_monitor: HashMap<String, String>,
     #[serde(default = "default_gap")]
     pub gap: i32,
     pub layouts: HashMap<String, LayoutConfig>,
@@ -132,6 +145,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
         LayoutConfig {
             id: "focus-code".to_string(),
             name: "Foco + Terminais".to_string(),
+            monitor: None,
             zones: vec![
                 ZoneConfig {
                     id: 1,
@@ -142,6 +156,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.65,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 2,
@@ -152,6 +167,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.35,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 3,
@@ -162,6 +178,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.35,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
             ],
         },
@@ -171,6 +188,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
         LayoutConfig {
             id: "3-columns".to_string(),
             name: "3 Colunas".to_string(),
+            monitor: None,
             zones: vec![
                 ZoneConfig {
                     id: 1,
@@ -181,6 +199,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.3333,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 2,
@@ -191,6 +210,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.3333,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 3,
@@ -201,6 +221,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.3334,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
             ],
         },
@@ -210,6 +231,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
         LayoutConfig {
             id: "quarters".to_string(),
             name: "4 Quadrantes".to_string(),
+            monitor: None,
             zones: vec![
                 ZoneConfig {
                     id: 7,
@@ -220,6 +242,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 9,
@@ -230,6 +253,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 1,
@@ -240,6 +264,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 3,
@@ -250,6 +275,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 0.5,
                     color: None,
+                    monitor: None,
                 },
             ],
         },
@@ -259,6 +285,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
         LayoutConfig {
             id: "halves".to_string(),
             name: "2 Metades (Split)".to_string(),
+            monitor: None,
             zones: vec![
                 ZoneConfig {
                     id: 1,
@@ -269,6 +296,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
                 ZoneConfig {
                     id: 2,
@@ -279,6 +307,7 @@ fn default_layouts() -> HashMap<String, LayoutConfig> {
                     w: 0.5,
                     h: 1.0,
                     color: None,
+                    monitor: None,
                 },
             ],
         },
@@ -308,6 +337,7 @@ fn load_config() -> ConfigFile {
 
     ConfigFile {
         active_layout_id: "focus-code".to_string(),
+        active_layout_per_monitor: HashMap::new(),
         gap: 6,
         layouts: defaults,
     }
@@ -481,16 +511,16 @@ unsafe fn create_glass_tray_icon() -> HICON {
 
 fn vk_to_char(vk: u32) -> Option<char> {
     match vk {
-        v if v == VK_0.0 as u32 => Some('0'),
-        v if v == VK_1.0 as u32 => Some('1'),
-        v if v == VK_2.0 as u32 => Some('2'),
-        v if v == VK_3.0 as u32 => Some('3'),
-        v if v == VK_4.0 as u32 => Some('4'),
-        v if v == VK_5.0 as u32 => Some('5'),
-        v if v == VK_6.0 as u32 => Some('6'),
-        v if v == VK_7.0 as u32 => Some('7'),
-        v if v == VK_8.0 as u32 => Some('8'),
-        v if v == VK_9.0 as u32 => Some('9'),
+        v if v == VK_0.0 as u32 || v == VK_NUMPAD0.0 as u32 => Some('0'),
+        v if v == VK_1.0 as u32 || v == VK_NUMPAD1.0 as u32 => Some('1'),
+        v if v == VK_2.0 as u32 || v == VK_NUMPAD2.0 as u32 => Some('2'),
+        v if v == VK_3.0 as u32 || v == VK_NUMPAD3.0 as u32 => Some('3'),
+        v if v == VK_4.0 as u32 || v == VK_NUMPAD4.0 as u32 => Some('4'),
+        v if v == VK_5.0 as u32 || v == VK_NUMPAD5.0 as u32 => Some('5'),
+        v if v == VK_6.0 as u32 || v == VK_NUMPAD6.0 as u32 => Some('6'),
+        v if v == VK_7.0 as u32 || v == VK_NUMPAD7.0 as u32 => Some('7'),
+        v if v == VK_8.0 as u32 || v == VK_NUMPAD8.0 as u32 => Some('8'),
+        v if v == VK_9.0 as u32 || v == VK_NUMPAD9.0 as u32 => Some('9'),
         v if v == VK_A.0 as u32 => Some('A'),
         v if v == VK_B.0 as u32 => Some('B'),
         v if v == VK_C.0 as u32 => Some('C'),
@@ -521,14 +551,84 @@ fn vk_to_char(vk: u32) -> Option<char> {
     }
 }
 
-fn tile_active_window_to_zone(zone: &ZoneConfig, gap: i32) {
+#[derive(Debug, Clone)]
+pub struct MonitorDetails {
+    pub id: i32,
+    pub name: String,
+    pub is_primary: bool,
+    pub hmonitor: HMONITOR,
+    pub work_area: RECT,
+}
+
+unsafe extern "system" fn monitor_enum_proc(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    let monitors = &mut *(lparam.0 as *mut Vec<HMONITOR>);
+    monitors.push(monitor);
+    BOOL(1)
+}
+
+fn get_all_monitors() -> Vec<MonitorDetails> {
+    let mut raw_monitors: Vec<HMONITOR> = Vec::new();
+    unsafe {
+        let lparam = LPARAM(&mut raw_monitors as *mut _ as isize);
+        let _ = EnumDisplayMonitors(
+            HDC(std::ptr::null_mut()),
+            None,
+            Some(monitor_enum_proc),
+            lparam,
+        );
+    }
+
+    let mut result = Vec::new();
+    for (idx, &hmon) in raw_monitors.iter().enumerate() {
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            rcMonitor: RECT::default(),
+            rcWork: RECT::default(),
+            dwFlags: 0,
+        };
+        let is_ok = unsafe { GetMonitorInfoW(hmon, &mut mi).as_bool() };
+        let is_primary = is_ok && (mi.dwFlags & 1 != 0); // MONITORINFOF_PRIMARY = 1
+        let width = if is_ok { mi.rcMonitor.right - mi.rcMonitor.left } else { 1920 };
+        let height = if is_ok { mi.rcMonitor.bottom - mi.rcMonitor.top } else { 1080 };
+        let mon_id = (idx + 1) as i32;
+        let name = format!("Monitor {} ({}×{})", mon_id, width, height);
+
+        result.push(MonitorDetails {
+            id: mon_id,
+            name,
+            is_primary,
+            hmonitor: hmon,
+            work_area: mi.rcWork,
+        });
+    }
+    result
+}
+
+fn tile_active_window_to_zone(zone: &ZoneConfig, gap: i32, target_mon_idx: i32) {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0 == std::ptr::null_mut() {
             return;
         }
 
-        let monitor: HMONITOR = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        // Determina o monitor alvo:
+        // Usa zone.monitor se definido, caso contrário usa target_mon_idx (o monitor cujo layout foi acionado).
+        let desired_mon = zone.monitor.filter(|&m| m > 0).unwrap_or(target_mon_idx);
+        let target_monitor = if desired_mon > 0 {
+            let all_monitors = get_all_monitors();
+            all_monitors.get((desired_mon - 1) as usize).map(|m| m.hmonitor)
+        } else {
+            None
+        };
+
+        let monitor: HMONITOR = target_monitor.unwrap_or_else(|| {
+            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        });
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             rcMonitor: RECT::default(),
@@ -550,22 +650,155 @@ fn tile_active_window_to_zone(zone: &ZoneConfig, gap: i32) {
         let right = work_left + ((zone.x + zone.w) * work_w as f32).round() as i32;
         let bottom = work_top + ((zone.y + zone.h) * work_h as f32).round() as i32;
 
-        let x = left + gap;
-        let y = top + gap;
-        let w = ((right - left) - (gap * 2)).max(100);
-        let h = ((bottom - top) - (gap * 2)).max(100);
+        let target_x = left + gap;
+        let target_y = top + gap;
+        let mut target_w = ((right - left) - (gap * 2)).max(100);
+        let mut target_h = ((bottom - top) - (gap * 2)).max(100);
+
+        // Se gap for 0, expande 1px para sobrepor a linha de borda/anti-aliasing nativa do Windows 11
+        if gap == 0 {
+            target_w += 1;
+            target_h += 1;
+        }
 
         let _ = ShowWindow(hwnd, SW_RESTORE);
 
+        // Converte as coordenadas físicas do Monitor (PER_MONITOR_AWARE_V2) para o espaço lógico
+        // da janela alvo (caso a janela seja System-DPI Aware em um monitor com DPI diferente do principal):
+        let mut pt_tl = POINT {
+            x: target_x,
+            y: target_y,
+        };
+        let mut pt_br = POINT {
+            x: target_x + target_w,
+            y: target_y + target_h,
+        };
+        let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut pt_tl);
+        let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut pt_br);
+
+        let log_x = pt_tl.x;
+        let log_y = pt_tl.y;
+        let log_w = (pt_br.x - pt_tl.x).max(100);
+        let log_h = (pt_br.y - pt_tl.y).max(100);
+
+        // 1ª Passada: move a janela para o centro/retângulo do monitor de destino para que o Windows
+        // dispare WM_DPICHANGED na janela antes de medirmos as bordas visíveis do DWM.
+        // Usamos SWP_NOSENDCHANGING para ignorar bloqueios de tamanho mínimo (minWidth/WM_GETMINMAXINFO)
+        // de apps Electron como o Antares SQL.
         let _ = SetWindowPos(
             hwnd,
             HWND::default(),
-            x,
-            y,
-            w,
-            h,
-            SWP_NOZORDER | SWP_NOACTIVATE,
+            log_x,
+            log_y,
+            log_w,
+            log_h,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
         );
+
+        // Recalcula a conversão Physical -> Logical agora que a janela já está no monitor de destino:
+        let mut pt_tl2 = POINT {
+            x: target_x,
+            y: target_y,
+        };
+        let mut pt_br2 = POINT {
+            x: target_x + target_w,
+            y: target_y + target_h,
+        };
+        let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut pt_tl2);
+        let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut pt_br2);
+
+        let mut final_x = pt_tl2.x;
+        let mut final_y = pt_tl2.y;
+        let mut final_w = (pt_br2.x - pt_tl2.x).max(100);
+        let mut final_h = (pt_br2.y - pt_tl2.y).max(100);
+
+        // 2ª Passada: mede a diferença entre a borda visível real (DWMWA_EXTENDED_FRAME_BOUNDS, sempre física)
+        // e o alvo físico desejado (target_x, target_y, target_w, target_h), aplicando a correção exata!
+        let mut frame_rect = RECT::default();
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut frame_rect as *mut _ as *mut core::ffi::c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .is_ok()
+        {
+            // Converte também os cantos do frame_rect físico para o espaço lógico da janela
+            let mut f_tl = POINT {
+                x: frame_rect.left,
+                y: frame_rect.top,
+            };
+            let mut f_br = POINT {
+                x: frame_rect.right,
+                y: frame_rect.bottom,
+            };
+            let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut f_tl);
+            let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut f_br);
+
+            let actual_w = f_br.x - f_tl.x;
+            let actual_h = f_br.y - f_tl.y;
+
+            let err_left = f_tl.x - final_x;
+            let err_top = f_tl.y - final_y;
+
+            // Só compensa a largura/altura se a diferença for apenas borda do DWM (<= 32px).
+            // Se a janela recusou encolher porque tem um minWidth rígido no Electron (> 32px maior que a zona),
+            // em vez de somar um erro negativo, mantemos a largura real dela e recuamos o X para não cortar na borda direita do monitor!
+            if (actual_w - final_w).abs() <= 32 {
+                let err_right = (final_x + final_w) - f_br.x;
+                final_x -= err_left;
+                final_w += err_left + err_right;
+            } else {
+                // A janela tem minWidth maior que a zona: alinha para caber dentro do monitor sem cortar à direita!
+                let mut mon_right_pt = POINT {
+                    x: mi.rcWork.right - gap,
+                    y: mi.rcWork.bottom - gap,
+                };
+                let mut mon_left_pt = POINT {
+                    x: mi.rcWork.left + gap,
+                    y: mi.rcWork.top + gap,
+                };
+                let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut mon_right_pt);
+                let _ = PhysicalToLogicalPointForPerMonitorDPI(hwnd, &mut mon_left_pt);
+
+                final_x -= err_left;
+                if final_x + actual_w > mon_right_pt.x {
+                    final_x = (mon_right_pt.x - actual_w).max(mon_left_pt.x);
+                }
+            }
+
+            if (actual_h - final_h).abs() <= 32 {
+                let err_bottom = (final_y + final_h) - f_br.y;
+                final_y -= err_top;
+                final_h += err_top + err_bottom;
+            } else {
+                final_y -= err_top;
+            }
+
+            let _ = SetWindowPos(
+                hwnd,
+                HWND::default(),
+                final_x,
+                final_y,
+                final_w,
+                final_h,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+            );
+        }
+    }
+}
+
+fn get_active_layout_for_monitor(config: &ConfigFile, monitor_id: i32) -> String {
+    let key = monitor_id.to_string();
+    if let Some(lay_id) = config.active_layout_per_monitor.get(&key) {
+        if config.layouts.contains_key(lay_id) {
+            return lay_id.clone();
+        }
+    }
+    if config.layouts.contains_key(&config.active_layout_id) {
+        config.active_layout_id.clone()
+    } else {
+        config.layouts.keys().next().cloned().unwrap_or_else(|| "focus-code".to_string())
     }
 }
 
@@ -575,29 +808,28 @@ fn sync_layout_ui(
     zone_model: &Rc<VecModel<ZoneData>>,
     layout_model: &Rc<VecModel<LayoutItem>>,
 ) {
-    let active_id = &config.active_layout_id;
+    let current_mon = app.get_active_monitor_tab();
+    let active_id = get_active_layout_for_monitor(config, current_mon);
     let current_layout = config
         .layouts
-        .get(active_id)
+        .get(&active_id)
         .cloned()
         .unwrap_or_else(|| config.layouts.values().next().cloned().unwrap());
 
     app.set_layout_name(current_layout.name.clone().into());
 
-    let mut sorted_keys: Vec<_> = config.layouts.keys().cloned().collect();
-    sorted_keys.sort();
+    let mut sorted_layouts: Vec<_> = config.layouts.values().cloned().collect();
+    sorted_layouts.sort_by(|a, b| a.name.cmp(&b.name));
 
     while layout_model.row_count() > 0 {
         layout_model.remove(0);
     }
-    for k in sorted_keys {
-        if let Some(lay) = config.layouts.get(&k) {
-            layout_model.push(LayoutItem {
-                id: lay.id.clone().into(),
-                name: lay.name.clone().into(),
-                is_active: lay.id == *active_id,
-            });
-        }
+    for lay in sorted_layouts {
+        layout_model.push(LayoutItem {
+            id: lay.id.clone().into(),
+            name: lay.name.clone().into(),
+            is_active: lay.id == active_id,
+        });
     }
 
     while zone_model.row_count() > 0 {
@@ -612,16 +844,18 @@ fn sync_layout_ui(
             y: z.y,
             w: z.w,
             h: z.h,
+            monitor: z.monitor.unwrap_or(0),
             color: get_color_for_id(z.id),
         });
     }
 
     app.set_selected_id(-1);
     app.set_selected_key("".into());
+    app.set_selected_monitor(0);
 }
 
-fn commit_current_zones(config: &mut ConfigFile, zone_model: &Rc<VecModel<ZoneData>>) {
-    let active_id = config.active_layout_id.clone();
+fn commit_current_zones(config: &mut ConfigFile, zone_model: &Rc<VecModel<ZoneData>>, current_mon: i32) {
+    let active_id = get_active_layout_for_monitor(config, current_mon);
     let mut zones = Vec::new();
     for i in 0..zone_model.row_count() {
         let z = zone_model.row_data(i).unwrap();
@@ -633,9 +867,11 @@ fn commit_current_zones(config: &mut ConfigFile, zone_model: &Rc<VecModel<ZoneDa
             y: z.y,
             w: z.w,
             h: z.h,
+            monitor: if z.monitor > 0 { Some(z.monitor) } else { None },
             color: None,
         });
     }
+
     if let Some(layout) = config.layouts.get_mut(&active_id) {
         layout.zones = zones;
     }
@@ -645,6 +881,7 @@ struct DaemonContext {
     hwnd: HWND,
     config: Arc<Mutex<ConfigFile>>,
     layout_id_map: Vec<String>,
+    slint_weak: slint::Weak<AppWindow>,
 }
 
 static mut GLOBAL_DAEMON: Option<*mut DaemonContext> = None;
@@ -679,21 +916,61 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 if let Some(ch) = vk_to_char(kbd.vkCode) {
                     if let Some(daemon_ptr) = GLOBAL_DAEMON {
                         let daemon = &*daemon_ptr;
+                        let fg_hwnd = GetForegroundWindow();
+                        let fg_mon = MonitorFromWindow(fg_hwnd, MONITOR_DEFAULTTONEAREST);
+                        let all_mons = get_all_monitors();
+                        let current_mon_idx = all_mons
+                            .iter()
+                            .position(|m| m.hmonitor == fg_mon)
+                            .map(|i| (i + 1) as i32)
+                            .unwrap_or(1);
+
                         let cfg = daemon.config.lock().unwrap();
-                        if let Some(layout) = cfg.layouts.get(&cfg.active_layout_id) {
-                            let ch_str = ch.to_string();
-                            let target_idx = layout.zones.iter().position(|z| {
-                                z.key.eq_ignore_ascii_case(&ch_str)
-                            });
-                            if let Some(idx) = target_idx {
+                        let ch_str = ch.to_string();
+
+                        // 1. Verifica primeiro no layout ativo do monitor onde a janela já está
+                        let active_id = get_active_layout_for_monitor(&cfg, current_mon_idx);
+                        if let Some(layout) = cfg.layouts.get(&active_id) {
+                            if let Some(idx) = layout
+                                .zones
+                                .iter()
+                                .position(|z| z.key.eq_ignore_ascii_case(&ch_str))
+                            {
                                 drop(cfg);
                                 let _ = PostMessageW(
                                     daemon.hwnd,
                                     WM_APP_TILE_ZONE,
                                     WPARAM(idx),
-                                    LPARAM(0),
+                                    LPARAM(current_mon_idx as isize),
                                 );
                                 return LRESULT(1);
+                            }
+                        }
+
+                        // 2. Se não encontrou no monitor atual, verifica nos layouts ativos dos outros monitores!
+                        // Assim, se o Monitor 1 usa Super+1,2,3 e o Monitor 2 usa Super+4,5,6,
+                        // apertar Super+4 envia a janela ativa diretamente para a zona do Monitor 2!
+                        for m in &all_mons {
+                            if m.id == current_mon_idx {
+                                continue;
+                            }
+                            let other_active_id = get_active_layout_for_monitor(&cfg, m.id);
+                            if let Some(layout) = cfg.layouts.get(&other_active_id) {
+                                if let Some(idx) = layout
+                                    .zones
+                                    .iter()
+                                    .position(|z| z.key.eq_ignore_ascii_case(&ch_str))
+                                {
+                                    let target_mon = m.id;
+                                    drop(cfg);
+                                    let _ = PostMessageW(
+                                        daemon.hwnd,
+                                        WM_APP_TILE_ZONE,
+                                        WPARAM(idx),
+                                        LPARAM(target_mon as isize),
+                                    );
+                                    return LRESULT(1);
+                                }
                             }
                         }
                     }
@@ -719,10 +996,12 @@ unsafe extern "system" fn wndproc(
     match msg {
         WM_APP_TILE_ZONE => {
             let zone_idx = wparam.0;
+            let mon_idx = lparam.0 as i32;
             let cfg = daemon.config.lock().unwrap();
-            if let Some(layout) = cfg.layouts.get(&cfg.active_layout_id) {
+            let active_id = get_active_layout_for_monitor(&cfg, mon_idx);
+            if let Some(layout) = cfg.layouts.get(&active_id) {
                 if let Some(zone) = layout.zones.get(zone_idx) {
-                    tile_active_window_to_zone(zone, cfg.gap);
+                    tile_active_window_to_zone(zone, cfg.gap, mon_idx);
                 }
             }
             LRESULT(0)
@@ -746,6 +1025,9 @@ unsafe extern "system" fn wndproc(
                 let current = is_autostart_enabled();
                 set_autostart(!current);
             } else if cmd_id == IDM_EXIT {
+                let _ = slint::invoke_from_event_loop(|| {
+                    let _ = slint::quit_event_loop();
+                });
                 PostQuitMessage(0);
             } else if cmd_id >= IDM_LAYOUT_BASE && cmd_id < IDM_LAYOUT_BASE + daemon.layout_id_map.len() {
                 let target_idx = cmd_id - IDM_LAYOUT_BASE;
@@ -758,7 +1040,12 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_APP_OPEN_EDITOR => {
-            slint::invoke_from_event_loop(|| {}).ok();
+            let slint_ui = daemon.slint_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(a) = slint_ui.upgrade() {
+                    let _ = a.show();
+                }
+            });
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -894,13 +1181,28 @@ fn create_tray_icon(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
     let shared_config = Arc::new(Mutex::new(load_config()));
     let app = AppWindow::new()?;
     let weak_app = app.as_weak();
 
     let zone_model: Rc<VecModel<ZoneData>> = Rc::new(VecModel::default());
     let layout_model: Rc<VecModel<LayoutItem>> = Rc::new(VecModel::default());
+    let monitor_model: Rc<VecModel<MonitorTabItem>> = Rc::new(VecModel::default());
 
+    let all_monitors = get_all_monitors();
+    for m in &all_monitors {
+        monitor_model.push(MonitorTabItem {
+            id: m.id,
+            name: m.name.clone().into(),
+            is_primary: m.is_primary,
+        });
+    }
+
+    app.set_monitors_list(ModelRc::from(monitor_model.clone()));
+    app.set_active_monitor_tab(1);
     app.set_zones(ModelRc::from(zone_model.clone()));
     app.set_layouts_list(ModelRc::from(layout_model.clone()));
     app.set_gap_val(shared_config.lock().unwrap().gap);
@@ -909,6 +1211,24 @@ fn main() -> Result<(), slint::PlatformError> {
         let cfg = shared_config.lock().unwrap();
         sync_layout_ui(&app, &cfg, &zone_model, &layout_model);
     }
+
+    let app_weak_tab = app.as_weak();
+    let cfg_tab = shared_config.clone();
+    let zm_tab = zone_model.clone();
+    let lm_tab = layout_model.clone();
+    app.on_select_monitor_tab(move |mon_id| {
+        if let Some(a) = app_weak_tab.upgrade() {
+            let mut cfg = cfg_tab.lock().unwrap();
+            let prev_mon = a.get_active_monitor_tab();
+            if prev_mon == mon_id {
+                return;
+            }
+            commit_current_zones(&mut cfg, &zm_tab, prev_mon);
+            a.set_active_monitor_tab(mon_id);
+            sync_layout_ui(&a, &cfg, &zm_tab, &lm_tab);
+            save_config(&cfg);
+        }
+    });
 
     let cfg_gap = shared_config.clone();
     app.on_gap_changed(move |new_gap| {
@@ -920,13 +1240,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let zm_sel = zone_model.clone();
     let lm_sel = layout_model.clone();
     app.on_select_layout(move |lid| {
-        let mut cfg = cfg_sel.lock().unwrap();
-        commit_current_zones(&mut cfg, &zm_sel);
-        let id_str = lid.to_string();
-        if cfg.layouts.contains_key(&id_str) {
-            cfg.active_layout_id = id_str;
-            if let Some(a) = app_weak_sel.upgrade() {
+        if let Some(a) = app_weak_sel.upgrade() {
+            let mut cfg = cfg_sel.lock().unwrap();
+            let cur_mon = a.get_active_monitor_tab();
+            commit_current_zones(&mut cfg, &zm_sel, cur_mon);
+            let id_str = lid.to_string();
+            if cfg.layouts.contains_key(&id_str) {
+                cfg.active_layout_per_monitor.insert(cur_mon.to_string(), id_str.clone());
+                if cur_mon == 1 {
+                    cfg.active_layout_id = id_str;
+                }
                 sync_layout_ui(&a, &cfg, &zm_sel, &lm_sel);
+                save_config(&cfg);
             }
         }
     });
@@ -936,51 +1261,56 @@ fn main() -> Result<(), slint::PlatformError> {
     let zm_new = zone_model.clone();
     let lm_new = layout_model.clone();
     app.on_new_layout(move || {
-        let mut cfg = cfg_new.lock().unwrap();
-        commit_current_zones(&mut cfg, &zm_new);
-
-        let count = cfg.layouts.len() + 1;
-        let new_id = format!(
-            "custom-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        );
-        let new_name = format!("Layout {}", count);
-
-        cfg.layouts.insert(
-            new_id.clone(),
-            LayoutConfig {
-                id: new_id.clone(),
-                name: new_name,
-                zones: vec![
-                    ZoneConfig {
-                        id: 1,
-                        key: "1".into(),
-                        title: "Zona 1".into(),
-                        x: 0.0,
-                        y: 0.0,
-                        w: 0.5,
-                        h: 1.0,
-                        color: None,
-                    },
-                    ZoneConfig {
-                        id: 2,
-                        key: "2".into(),
-                        title: "Zona 2".into(),
-                        x: 0.5,
-                        y: 0.0,
-                        w: 0.5,
-                        h: 1.0,
-                        color: None,
-                    },
-                ],
-            },
-        );
-
-        cfg.active_layout_id = new_id;
         if let Some(a) = app_weak_new.upgrade() {
+            let mut cfg = cfg_new.lock().unwrap();
+            let cur_mon = a.get_active_monitor_tab();
+            commit_current_zones(&mut cfg, &zm_new, cur_mon);
+
+            let count = cfg.layouts.len() + 1;
+            let new_id = format!(
+                "custom-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            );
+            let new_name = format!("Layout {}", count);
+
+            cfg.layouts.insert(
+                new_id.clone(),
+                LayoutConfig {
+                    id: new_id.clone(),
+                    name: new_name,
+                    monitor: None,
+                    zones: vec![
+                        ZoneConfig {
+                            id: 1,
+                            key: "1".into(),
+                            title: "Zona 1".into(),
+                            x: 0.0,
+                            y: 0.0,
+                            w: 0.5,
+                            h: 1.0,
+                            color: None,
+                            monitor: None,
+                        },
+                        ZoneConfig {
+                            id: 2,
+                            key: "2".into(),
+                            title: "Zona 2".into(),
+                            x: 0.5,
+                            y: 0.0,
+                            w: 0.5,
+                            h: 1.0,
+                            color: None,
+                            monitor: None,
+                        },
+                    ],
+                },
+            );
+
+            cfg.active_layout_per_monitor.insert(cur_mon.to_string(), new_id.clone());
+            cfg.active_layout_id = new_id;
             sync_layout_ui(&a, &cfg, &zm_new, &lm_new);
         }
     });
@@ -991,6 +1321,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let lm_del = layout_model.clone();
     app.on_delete_layout(move |lid| {
         let mut cfg = cfg_del.lock().unwrap();
+        // Permite deletar se houver mais de 1 layout no total
         if cfg.layouts.len() <= 1 {
             return;
         }
@@ -999,6 +1330,17 @@ fn main() -> Result<(), slint::PlatformError> {
 
         if cfg.active_layout_id == id_str {
             cfg.active_layout_id = cfg.layouts.keys().next().cloned().unwrap();
+        }
+        let keys_to_update: Vec<(String, i32)> = cfg
+            .active_layout_per_monitor
+            .iter()
+            .filter(|(_, v)| **v == id_str)
+            .map(|(k, _)| (k.clone(), k.parse::<i32>().unwrap_or(1)))
+            .collect();
+
+        for (k, mon_num) in keys_to_update {
+            let next_id = get_active_layout_for_monitor(&cfg, mon_num);
+            cfg.active_layout_per_monitor.insert(k, next_id);
         }
 
         if let Some(a) = app_weak_del.upgrade() {
@@ -1014,7 +1356,12 @@ fn main() -> Result<(), slint::PlatformError> {
         let name_str = new_name.trim().to_string();
         if !name_str.is_empty() {
             let mut cfg = cfg_ren.lock().unwrap();
-            let active_id = cfg.active_layout_id.clone();
+            let cur_mon = if let Some(a) = app_weak_ren.upgrade() {
+                a.get_active_monitor_tab()
+            } else {
+                1
+            };
+            let active_id = get_active_layout_for_monitor(&cfg, cur_mon);
             if let Some(lay) = cfg.layouts.get_mut(&active_id) {
                 lay.name = name_str;
             }
@@ -1077,6 +1424,25 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let zmon = zone_model.clone();
+    let app_weak_mon = app.as_weak();
+    app.on_select_monitor(move |m_idx| {
+        if let Some(a) = app_weak_mon.upgrade() {
+            let sel = a.get_selected_id();
+            if sel != -1 {
+                for i in 0..zmon.row_count() {
+                    let mut z = zmon.row_data(i).unwrap();
+                    if z.id == sel {
+                        z.monitor = m_idx;
+                        zmon.set_row_data(i, z);
+                        a.set_selected_monitor(m_idx);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     let za = zone_model.clone();
     let app_weak_add = app.as_weak();
     app.on_add_zone(move || {
@@ -1097,12 +1463,14 @@ fn main() -> Result<(), slint::PlatformError> {
             y: 0.1,
             w: 0.35,
             h: 0.35,
+            monitor: 0,
             color: get_color_for_id(next_id),
         };
         za.push(new_z.clone());
         if let Some(a) = app_weak_add.upgrade() {
             a.set_selected_id(new_z.id);
             a.set_selected_key(new_z.key);
+            a.set_selected_monitor(new_z.monitor);
         }
     });
 
@@ -1121,31 +1489,17 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    let zs = zone_model.clone();
+    let zm_save = zone_model.clone();
     let cfg_save = shared_config.clone();
     let app_weak_save = app.as_weak();
     app.on_save_and_apply(move || {
         let mut cfg = cfg_save.lock().unwrap();
-        let active_id = cfg.active_layout_id.clone();
-
-        let mut zones = Vec::new();
-        for i in 0..zs.row_count() {
-            let z = zs.row_data(i).unwrap();
-            zones.push(ZoneConfig {
-                id: z.id,
-                key: z.key.to_string(),
-                title: z.title.to_string(),
-                x: z.x,
-                y: z.y,
-                w: z.w,
-                h: z.h,
-                color: None,
-            });
-        }
-
-        if let Some(layout) = cfg.layouts.get_mut(&active_id) {
-            layout.zones = zones;
-        }
+        let cur_mon = if let Some(a) = app_weak_save.upgrade() {
+            a.get_active_monitor_tab()
+        } else {
+            1
+        };
+        commit_current_zones(&mut cfg, &zm_save, cur_mon);
 
         if let Some(a) = app_weak_save.upgrade() {
             cfg.gap = a.get_gap_val();
@@ -1206,6 +1560,7 @@ fn main() -> Result<(), slint::PlatformError> {
             hwnd,
             config: thread_cfg,
             layout_id_map: Vec::new(),
+            slint_weak,
         });
 
         GLOBAL_DAEMON = Some(&mut *daemon as *mut _);
@@ -1223,16 +1578,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
-            if msg.message == WM_APP_OPEN_EDITOR {
-                let slint_ui = slint_weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(a) = slint_ui.upgrade() {
-                        let _ = a.show();
-                    }
-                });
-            } else {
-                let _ = DispatchMessageW(&msg);
-            }
+            let _ = DispatchMessageW(&msg);
         }
 
         if let Some(h) = GLOBAL_HOOK {
@@ -1258,8 +1604,6 @@ fn main() -> Result<(), slint::PlatformError> {
         slint::CloseRequestResponse::KeepWindowShown
     });
 
-    // Mantém o loop de eventos ativo para responder ao tray e aos atalhos
-    loop {
-        std::thread::park();
-    }
+    // Inicia o event loop do Slint e mantém vivo mesmo com a janela oculta
+    slint::run_event_loop_until_quit()
 }
